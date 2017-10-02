@@ -184,6 +184,22 @@ struct dns_table_entry {
   void *arg;
 };
 
+/** DNS table entry */
+struct doa_entry {
+  u8_t  state;
+  u8_t  numdns;
+  u8_t  tmr;
+  u8_t  retries;
+  u8_t  seqno;
+  u8_t  err;
+  u32_t ttl;
+  char name[DNS_MAX_NAME_LENGTH];
+  firmwareinfo_t fwinfo;
+  /* pointer to callback on DNS query done */
+  dns_doa_found_callback found;
+  void *arg;
+} doa_entry;
+
 #if DNS_LOCAL_HOSTLIST
 
 #if DNS_LOCAL_HOSTLIST_IS_DYNAMIC
@@ -561,7 +577,7 @@ dns_parse_name(unsigned char *query)
  * @return ERR_OK if packet is sent; an err_t indicating the problem otherwise
  */
 static err_t ICACHE_FLASH_ATTR
-dns_send(u8_t numdns, const char* name, u8_t id)
+dns_send(u8_t numdns, const char* name, u8_t id, uint16_t rr_type)
 {
   err_t err;
   struct dns_hdr *hdr;
@@ -606,7 +622,7 @@ dns_send(u8_t numdns, const char* name, u8_t id)
     *query++='\0';
 
     /* fill dns query */
-    qry.type = PP_HTONS(DNS_RRTYPE_A);
+    qry.type = PP_HTONS(rr_type);
     qry.cls = PP_HTONS(DNS_RRCLASS_IN);
     SMEMCPY(query, &qry, SIZEOF_DNS_QUERY);
 
@@ -654,7 +670,7 @@ dns_check_entry(u8_t i)
       pEntry->retries = 0;
       
       /* send DNS packet for this entry */
-      err = dns_send(pEntry->numdns, pEntry->name, i);
+      err = dns_send(pEntry->numdns, pEntry->name, i, DNS_RRTYPE_A);
       if (err != ERR_OK) {
         LWIP_DEBUGF(DNS_DEBUG | LWIP_DBG_LEVEL_WARNING,
                     ("dns_send returned error: %s\n", lwip_strerr(err)));
@@ -687,7 +703,7 @@ dns_check_entry(u8_t i)
         pEntry->tmr = pEntry->retries;
 
         /* send DNS packet for this entry */
-        err = dns_send(pEntry->numdns, pEntry->name, i);
+        err = dns_send(pEntry->numdns, pEntry->name, i, DNS_RRTYPE_A);
         if (err != ERR_OK) {
           LWIP_DEBUGF(DNS_DEBUG | LWIP_DBG_LEVEL_WARNING,
                       ("dns_send returned error: %s\n", lwip_strerr(err)));
@@ -715,6 +731,82 @@ dns_check_entry(u8_t i)
   }
 }
 
+static void ICACHE_FLASH_ATTR
+dns_doa_check_entry()
+{
+  err_t err;
+  struct doa_entry *pEntry = &doa_entry;
+
+  switch(pEntry->state) {
+
+    case DNS_STATE_NEW: {
+      /* initialize new entry */
+      pEntry->state   = DNS_STATE_ASKING;
+      pEntry->numdns  = 0;
+      pEntry->tmr     = 1;
+      pEntry->retries = 0;
+      
+      /* send DNS packet for this entry */
+      err = dns_send(pEntry->numdns, pEntry->name, 0, DNS_RRTYPE_DOA);
+      if (err != ERR_OK) {
+        LWIP_DEBUGF(DNS_DEBUG | LWIP_DBG_LEVEL_WARNING,
+                    ("dns_send returned error: %s\n", lwip_strerr(err)));
+      }
+      break;
+    }
+
+//~    case DNS_STATE_ASKING: {
+//~      if (--pEntry->tmr == 0) {
+//~        if (++pEntry->retries == DNS_MAX_RETRIES) {
+//~          if ((pEntry->numdns+1<DNS_MAX_SERVERS) && !ip_addr_isany(&dns_servers[pEntry->numdns+1])) {
+//~            /* change of server */
+//~            pEntry->numdns++;
+//~            pEntry->tmr     = 1;
+//~            pEntry->retries = 0;
+//~            break;
+//~          } else {
+//~            LWIP_DEBUGF(DNS_DEBUG, ("dns_check_entry: \"%s\": timeout\n", pEntry->name));
+//~            /* call specified callback function if provided */
+//~            if (pEntry->found)
+//~              (*pEntry->found)(pEntry->name, NULL, pEntry->arg);
+//~            /* flush this entry */
+//~            pEntry->state   = DNS_STATE_UNUSED;
+//~            pEntry->found   = NULL;
+//~            break;
+//~          }
+//~        }
+//~
+//~        /* wait longer for the next retry */
+//~        pEntry->tmr = pEntry->retries;
+//~
+//~        /* send DNS packet for this entry */
+//~        err = dns_send(pEntry->numdns, pEntry->name, i, DNS_RRTYPE_A);
+//~        if (err != ERR_OK) {
+//~          LWIP_DEBUGF(DNS_DEBUG | LWIP_DBG_LEVEL_WARNING,
+//~                      ("dns_send returned error: %s\n", lwip_strerr(err)));
+//~        }
+//~      }
+//~      break;
+//~    }
+
+    case DNS_STATE_DONE: {
+      /* if the time to live is nul */
+      if (--pEntry->ttl == 0) {
+        LWIP_DEBUGF(DNS_DEBUG, ("dns_check_entry: \"%s\": flush\n", pEntry->name));
+        /* flush this entry */
+        pEntry->state = DNS_STATE_UNUSED;
+        pEntry->found = NULL;
+      }
+      break;
+    }
+    case DNS_STATE_UNUSED:
+      /* nothing to do */
+      break;
+    default:
+      LWIP_ASSERT("unknown dns_table entry state:", 0);
+      break;
+  }
+}
 /**
  * Call dns_check_entry for each entry in dns_table - check all entries.
  */
@@ -923,6 +1015,38 @@ dns_enqueue(const char *name, dns_found_callback found, void *callback_arg)
   return ERR_INPROGRESS;
 }
 
+static err_t ICACHE_FLASH_ATTR
+dns_doa_enqueue(const char *name, dns_doa_found_callback found, void *callback_arg)
+{
+  u8_t i;
+  u8_t lseq, lseqi;
+  size_t namelen;
+
+  if (doa_entry.state != DNS_STATE_UNUSED && doa_entry.state != DNS_STATE_DONE) {
+      /* no entry can't be used now, table is full */
+      LWIP_DEBUGF(DNS_DEBUG, ("dns_doa_enqueue: \"%s\": DNS entries table is full\n", name));
+      return ERR_MEM;
+  }
+
+  /* use this entry */
+  LWIP_DEBUGF(DNS_DEBUG, ("dns_doa_enqueue: \"%s\": use DNS entry %"U16_F"\n", name, (u16_t)(i)));
+
+  /* fill the entry */
+  doa_entry.state = DNS_STATE_NEW;
+  doa_entry.seqno = dns_seqno++;
+  doa_entry.found = found;
+  doa_entry.arg   = callback_arg;
+  namelen = LWIP_MIN(os_strlen(name), DNS_MAX_NAME_LENGTH-1);
+  MEMCPY(doa_entry.name, name, namelen);
+  doa_entry.name[namelen] = 0;
+
+  /* force to send query without waiting timer */
+  dns_doa_check_entry();
+
+  /* dns query is enqueued */
+  return ERR_INPROGRESS;
+}
+
 /**
  * Resolve a hostname (string) into an IP address.
  * NON-BLOCKING callback version for use with raw API!!!
@@ -978,19 +1102,19 @@ dns_gethostbyname(const char *hostname, ip_addr_t *addr, dns_found_callback foun
 }
 
 err_t ICACHE_FLASH_ATTR
-dns_getfirmwareinfo(const char *hostname, ip_addr_t *addr, dns_found_callback found,
+dns_getfirmwareinfo(const char *hostname, firmwareinfo_t *fwinfo, dns_doa_found_callback found,
                   void *callback_arg)
 {
   /* not initialized or no valid server yet, or invalid addr pointer
    * or invalid hostname or invalid hostname length */
-  if ((dns_pcb == NULL) || (addr == NULL) ||
+  if ((dns_pcb == NULL) || (fwinfo == NULL) ||
       (!hostname) || (!hostname[0]) ||
       (os_strlen(hostname) >= DNS_MAX_NAME_LENGTH)) {
     return ERR_ARG;
   }
 
   /* queue query with specified callback */
-  return dns_enqueue(hostname, found, callback_arg);
+  return dns_doa_enqueue(hostname, found, callback_arg);
 }
 
 #endif /* LWIP_DNS */

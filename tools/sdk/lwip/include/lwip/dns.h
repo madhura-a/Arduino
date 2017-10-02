@@ -78,6 +78,15 @@ extern "C" {
    sizeof(struct addrinfo) + sizeof(struct sockaddr_in) + DNS_MAX_NAME_LENGTH + 1 byte zero-termination */
 #define NETDB_ELEM_SIZE           (32 + 16 + DNS_MAX_NAME_LENGTH + 1)
 
+
+struct doa_firmwareinfo{
+    char firmware[DNS_DOA_MAX_PAYLOAD_SIZE];
+    char firmware_sig[DNS_DOA_MAX_PAYLOAD_SIZE];
+    char firmware_version[DNS_DOA_MAX_FWVERSION_SIZE];
+};
+typedef struct doa_firmwareinfo firmwareinfo_t;
+
+
 #if DNS_LOCAL_HOSTLIST
 /** struct used for local host-list */
 struct local_hostlist_entry {
@@ -103,6 +112,7 @@ struct local_hostlist_entry {
  * @param callback_arg a user-specified callback argument passed to dns_gethostbyname
 */
 typedef void (*dns_found_callback)(const char *name, ip_addr_t *ipaddr, void *callback_arg);
+typedef void (*dns_doa_found_callback)(const char *name, firmwareinfo_t *fwinfo, void *callback_arg);
 
 void           dns_init(void);
 void           dns_tmr(void);
@@ -110,8 +120,8 @@ void           dns_setserver(u8_t numdns, ip_addr_t *dnsserver);
 ip_addr_t      dns_getserver(u8_t numdns);
 err_t          dns_gethostbyname(const char *hostname, ip_addr_t *addr,
                                  dns_found_callback found, void *callback_arg);
-err_t          dns_getfirmwareinfo(const char *hostname, ip_addr_t *addr,
-                                 dns_found_callback found, void *callback_arg);
+err_t          dns_getfirmwareinfo(const char *hostname, firmwareinfo_t *fwinfo,
+                                 dns_doa_found_callback found, void *callback_arg);
 
 #if DNS_LOCAL_HOSTLIST && DNS_LOCAL_HOSTLIST_IS_DYNAMIC
 int            dns_local_removehost(const char *hostname, const ip_addr_t *addr);
