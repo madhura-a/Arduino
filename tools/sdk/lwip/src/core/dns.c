@@ -977,4 +977,20 @@ dns_gethostbyname(const char *hostname, ip_addr_t *addr, dns_found_callback foun
   return dns_enqueue(hostname, found, callback_arg);
 }
 
+err_t ICACHE_FLASH_ATTR
+dns_getfirmwareinfo(const char *hostname, ip_addr_t *addr, dns_found_callback found,
+                  void *callback_arg)
+{
+  /* not initialized or no valid server yet, or invalid addr pointer
+   * or invalid hostname or invalid hostname length */
+  if ((dns_pcb == NULL) || (addr == NULL) ||
+      (!hostname) || (!hostname[0]) ||
+      (os_strlen(hostname) >= DNS_MAX_NAME_LENGTH)) {
+    return ERR_ARG;
+  }
+
+  /* queue query with specified callback */
+  return dns_enqueue(hostname, found, callback_arg);
+}
+
 #endif /* LWIP_DNS */

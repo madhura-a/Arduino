@@ -62,6 +62,7 @@ extern "C" {
 #define DNS_RRTYPE_MINFO          14    /* mailbox or mail list information */
 #define DNS_RRTYPE_MX             15    /* mail exchange */
 #define DNS_RRTYPE_TXT            16    /* text strings */
+#define DNS_RRTYPE_DOA            259   /* DOA register */
 
 /** DNS field CLASS used for "Resource Records" */
 #define DNS_RRCLASS_IN            1     /* the Internet */
@@ -108,6 +109,8 @@ void           dns_tmr(void);
 void           dns_setserver(u8_t numdns, ip_addr_t *dnsserver);
 ip_addr_t      dns_getserver(u8_t numdns);
 err_t          dns_gethostbyname(const char *hostname, ip_addr_t *addr,
+                                 dns_found_callback found, void *callback_arg);
+err_t          dns_getfirmwareinfo(const char *hostname, ip_addr_t *addr,
                                  dns_found_callback found, void *callback_arg);
 
 #if DNS_LOCAL_HOSTLIST && DNS_LOCAL_HOSTLIST_IS_DYNAMIC
