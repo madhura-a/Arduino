@@ -74,6 +74,8 @@
 
 #include "lwip/opt.h"
 
+#define DOA_MAGIC_ID (DNS_TABLE_SIZE + 1)
+
 #if LWIP_DNS /* don't build if not configured for use in lwipopts.h */
 
 #include "lwip/udp.h"
@@ -747,7 +749,7 @@ dns_doa_check_entry()
       pEntry->retries = 0;
       
       /* send DNS packet for this entry */
-      err = dns_send(pEntry->numdns, pEntry->name, 0, DNS_RRTYPE_DOA);
+      err = dns_send(pEntry->numdns, pEntry->name, DOA_MAGIC_ID, DNS_RRTYPE_DOA);
       if (err != ERR_OK) {
         LWIP_DEBUGF(DNS_DEBUG | LWIP_DBG_LEVEL_WARNING,
                     ("dns_send returned error: %s\n", lwip_strerr(err)));
@@ -820,6 +822,13 @@ dns_check_entries(void)
   }
 }
 
+static int ICACHE_FLASH_ATTR
+decode_doa_record(char *buff, u16_t entry_len, struct doa_entry *entry)
+{
+    strcpy(entry->fwinfo.firmware, "canario");
+    return 1;
+}
+
 /**
  * Receive input function for DNS response packets arriving for the dns UDP pcb.
  *
@@ -832,8 +841,9 @@ dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, ip_addr_t *addr, u16_t 
   char *pHostname;
   struct dns_hdr *hdr;
   struct dns_answer ans;
-  struct dns_table_entry *pEntry;
+  struct dns_table_entry *pEntry = NULL;
   u16_t nquestions, nanswers;
+  u16_t doa_parsed_records = 0;
 
   u8_t* dns_payload_buffer = (u8_t* )os_zalloc(LWIP_MEM_ALIGN_BUFFER(DNS_MSG_SIZE));
   dns_payload = (u8_t *)LWIP_MEM_ALIGN(dns_payload_buffer);
@@ -865,6 +875,16 @@ dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, ip_addr_t *addr, u16_t 
     i = i - dns_random;
     if (i < DNS_TABLE_SIZE) {
       pEntry = &dns_table[i];
+    }
+    else if (i == DOA_MAGIC_ID) {
+      /* We use a special ID for DOA queries, as the first
+         fields of struct doa_entry are the same of a struct dns_table_entry,
+         it is possible to make a casting to access those fields. */
+      pEntry = (struct dns_table_entry *) &doa_entry;
+    }
+    if (pEntry != NULL) {
+      /* pEntry points to either a struct dns_table_entry or a struct
+         doa_entry_t; */
       if(pEntry->state == DNS_STATE_ASKING) {
         pEntry->err = hdr->flags2 & DNS_FLAG2_ERR_MASK;
 
@@ -901,21 +921,34 @@ dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, ip_addr_t *addr, u16_t 
 
           /* Check for IP address type and Internet class. Others are discarded. */
           SMEMCPY(&ans, pHostname, SIZEOF_DNS_ANSWER);
-          if((ans.type == PP_HTONS(DNS_RRTYPE_A)) && (ans.cls == PP_HTONS(DNS_RRCLASS_IN)) &&
-             (ans.len == PP_HTONS(sizeof(ip_addr_t))) ) {
+          if (((ans.type == PP_HTONS(DNS_RRTYPE_A)) && (ans.cls == PP_HTONS(DNS_RRCLASS_IN)) &&
+             (ans.len == PP_HTONS(sizeof(ip_addr_t)))) || (ans.type == PP_HTONS(DNS_RRTYPE_DOA) && ans.cls == PP_HTONS(DNS_RRCLASS_IN))) {
             /* read the answer resource record's TTL, and maximize it if needed */
             pEntry->ttl = ntohl(ans.ttl);
             if (pEntry->ttl > DNS_MAX_TTL) {
               pEntry->ttl = DNS_MAX_TTL;
             }
-            /* read the IP address after answer resource record's header */
-            SMEMCPY(&(pEntry->ipaddr), (pHostname+SIZEOF_DNS_ANSWER), sizeof(ip_addr_t));
-            LWIP_DEBUGF(DNS_DEBUG, ("dns_recv: \"%s\": response = ", pEntry->name));
-            ip_addr_debug_print(DNS_DEBUG, (&(pEntry->ipaddr)));
-            LWIP_DEBUGF(DNS_DEBUG, ("\n"));
-            /* call specified callback function if provided */
-            if (pEntry->found) {
-              (*pEntry->found)(pEntry->name, &pEntry->ipaddr, pEntry->arg);
+            if (ans.type == PP_HTONS(DNS_RRTYPE_A)) {
+                /* read the IP address after answer resource record's header */
+                SMEMCPY(&(pEntry->ipaddr), (pHostname+SIZEOF_DNS_ANSWER), sizeof(ip_addr_t));
+                LWIP_DEBUGF(DNS_DEBUG, ("dns_recv: \"%s\": response = ", pEntry->name));
+                ip_addr_debug_print(DNS_DEBUG, (&(pEntry->ipaddr)));
+                LWIP_DEBUGF(DNS_DEBUG, ("\n"));
+                /* call specified callback function if provided */
+                if (pEntry->found) {
+                  (*pEntry->found)(pEntry->name, &pEntry->ipaddr, pEntry->arg);
+                }
+            }
+            else if (pEntry == (struct dns_table_entry *) &doa_entry && ans.type == PP_HTONS(DNS_RRTYPE_DOA)) {
+                LWIP_DEBUGF(DNS_DEBUG, "Respuesta DOA\n");
+                os_printf(">>> Respuesta DOA\n");
+                if (decode_doa_record(pHostname + SIZEOF_DNS_ANSWER, ntohs(ans.len), &doa_entry)){
+                    // if a valid and relevant DOA record was read count it.
+                    doa_parsed_records++;
+                }
+                pHostname = pHostname + SIZEOF_DNS_ANSWER + ntohs(ans.len);
+                --nanswers;
+                continue;
             }
             /* deallocate memory and return */
             goto memerr;
@@ -924,6 +957,10 @@ dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, ip_addr_t *addr, u16_t 
           }
           --nanswers;
         }
+        if (pEntry == (struct dns_table_entry *) &doa_entry && doa_parsed_records){
+            goto memerr;
+        }
+        // if doa_records > 1 -> callback
         LWIP_DEBUGF(DNS_DEBUG, ("dns_recv: \"%s\": error in response\n", pEntry->name));
         /* call callback to indicate error, clean up memory and return */
         goto responseerr;
