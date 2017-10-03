@@ -120,7 +120,7 @@ void           dns_setserver(u8_t numdns, ip_addr_t *dnsserver);
 ip_addr_t      dns_getserver(u8_t numdns);
 err_t          dns_gethostbyname(const char *hostname, ip_addr_t *addr,
                                  dns_found_callback found, void *callback_arg);
-err_t          dns_getfirmwareinfo(const char *hostname, firmwareinfo_t *fwinfo,
+err_t          dns_getfirmwareinfo(const char *hostname,
                                  dns_doa_found_callback found, void *callback_arg);
 
 #if DNS_LOCAL_HOSTLIST && DNS_LOCAL_HOSTLIST_IS_DYNAMIC

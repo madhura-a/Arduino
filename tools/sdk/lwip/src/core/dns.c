@@ -747,7 +747,7 @@ dns_doa_check_entry()
       pEntry->numdns  = 0;
       pEntry->tmr     = 1;
       pEntry->retries = 0;
-      
+
       /* send DNS packet for this entry */
       err = dns_send(pEntry->numdns, pEntry->name, DOA_MAGIC_ID, DNS_RRTYPE_DOA);
       if (err != ERR_OK) {
@@ -958,6 +958,7 @@ dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, ip_addr_t *addr, u16_t 
           --nanswers;
         }
         if (pEntry == (struct dns_table_entry *) &doa_entry && doa_parsed_records){
+            doa_entry.found(doa_entry.name, &doa_entry.fwinfo, doa_entry.arg);
             goto memerr;
         }
         // if doa_records > 1 -> callback
@@ -973,7 +974,10 @@ dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, ip_addr_t *addr, u16_t 
 
 responseerr:
   /* ERROR: call specified callback function with NULL as name to indicate an error */
-  if (pEntry->found) {
+  if (pEntry == (struct dns_table_entry *) &doa_entry && doa_entry.found){
+    doa_entry.found(doa_entry.name, NULL, doa_entry.arg);
+  }
+  else if (pEntry->found) {
     (*pEntry->found)(pEntry->name, NULL, pEntry->arg);
   }
   /* flush this entry */
@@ -1139,12 +1143,12 @@ dns_gethostbyname(const char *hostname, ip_addr_t *addr, dns_found_callback foun
 }
 
 err_t ICACHE_FLASH_ATTR
-dns_getfirmwareinfo(const char *hostname, firmwareinfo_t *fwinfo, dns_doa_found_callback found,
-                  void *callback_arg)
+dns_getfirmwareinfo(const char *hostname, dns_doa_found_callback found,
+                    void *callback_arg)
 {
   /* not initialized or no valid server yet, or invalid addr pointer
    * or invalid hostname or invalid hostname length */
-  if ((dns_pcb == NULL) || (fwinfo == NULL) ||
+  if ((dns_pcb == NULL) ||
       (!hostname) || (!hostname[0]) ||
       (os_strlen(hostname) >= DNS_MAX_NAME_LENGTH)) {
     return ERR_ARG;
