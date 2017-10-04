@@ -51,6 +51,8 @@
    -----------------------------------------------
 */
 
+
+
 /**
  * SYS_LIGHTWEIGHT_PROT==1: if you want inter-task protection for certain
  * critical regions during buffer allocation, deallocation and memory
@@ -808,7 +810,7 @@
 #ifndef DNS_DOA_MAX_PAYLOAD_SIZE
 #define DNS_DOA_MAX_PAYLOAD_SIZE 256
 #endif
-    
+
 
 /** DOA max firmware version string size */
 #ifndef DNS_DOA_MAX_FWVERSION_SIZE

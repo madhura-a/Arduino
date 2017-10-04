@@ -76,12 +76,18 @@
 
 #define DOA_MAGIC_ID (DNS_TABLE_SIZE + 1)
 
+// FIXME: Remove on production
+// #define LWIP_DEBUGF(d, x) os_printf x
+// #define DOA_BASE64_DECODE
+// end FIXME
+
 #if LWIP_DNS /* don't build if not configured for use in lwipopts.h */
 
 #include "lwip/udp.h"
 #include "lwip/mem.h"
 #include "lwip/memp.h"
 #include "lwip/dns.h"
+#include "../../../../../cores/esp8266/libb64/cdecode.h"
 
 #include <string.h>
 
@@ -757,39 +763,39 @@ dns_doa_check_entry()
       break;
     }
 
-//~    case DNS_STATE_ASKING: {
-//~      if (--pEntry->tmr == 0) {
-//~        if (++pEntry->retries == DNS_MAX_RETRIES) {
-//~          if ((pEntry->numdns+1<DNS_MAX_SERVERS) && !ip_addr_isany(&dns_servers[pEntry->numdns+1])) {
-//~            /* change of server */
-//~            pEntry->numdns++;
-//~            pEntry->tmr     = 1;
-//~            pEntry->retries = 0;
-//~            break;
-//~          } else {
-//~            LWIP_DEBUGF(DNS_DEBUG, ("dns_check_entry: \"%s\": timeout\n", pEntry->name));
-//~            /* call specified callback function if provided */
-//~            if (pEntry->found)
-//~              (*pEntry->found)(pEntry->name, NULL, pEntry->arg);
-//~            /* flush this entry */
-//~            pEntry->state   = DNS_STATE_UNUSED;
-//~            pEntry->found   = NULL;
-//~            break;
-//~          }
-//~        }
-//~
-//~        /* wait longer for the next retry */
-//~        pEntry->tmr = pEntry->retries;
-//~
-//~        /* send DNS packet for this entry */
-//~        err = dns_send(pEntry->numdns, pEntry->name, i, DNS_RRTYPE_A);
-//~        if (err != ERR_OK) {
-//~          LWIP_DEBUGF(DNS_DEBUG | LWIP_DBG_LEVEL_WARNING,
-//~                      ("dns_send returned error: %s\n", lwip_strerr(err)));
-//~        }
-//~      }
-//~      break;
-//~    }
+    case DNS_STATE_ASKING: {
+      if (--pEntry->tmr == 0) {
+        if (++pEntry->retries == DNS_MAX_RETRIES) {
+          if ((pEntry->numdns+1<DNS_MAX_SERVERS) && !ip_addr_isany(&dns_servers[pEntry->numdns+1])) {
+            /* change of server */
+            pEntry->numdns++;
+            pEntry->tmr     = 1;
+            pEntry->retries = 0;
+            break;
+          } else {
+            LWIP_DEBUGF(DNS_DEBUG, ("dns_check_entry: \"%s\": timeout\n", pEntry->name));
+            /* call specified callback function if provided */
+            if (pEntry->found)
+              (*pEntry->found)(pEntry->name, NULL, pEntry->arg);
+            /* flush this entry */
+            pEntry->state   = DNS_STATE_UNUSED;
+            pEntry->found   = NULL;
+            break;
+          }
+        }
+
+        /* wait longer for the next retry */
+        pEntry->tmr = pEntry->retries;
+
+        /* send DNS packet for this entry */
+        err = dns_send(pEntry->numdns, pEntry->name, DOA_MAGIC_ID, DNS_RRTYPE_DOA);
+        if (err != ERR_OK) {
+          LWIP_DEBUGF(DNS_DEBUG | LWIP_DBG_LEVEL_WARNING,
+                      ("dns_send returned error: %s\n", lwip_strerr(err)));
+        }
+      }
+      break;
+    }
 
     case DNS_STATE_DONE: {
       /* if the time to live is nul */
@@ -825,8 +831,77 @@ dns_check_entries(void)
 static int ICACHE_FLASH_ATTR
 decode_doa_record(char *buff, u16_t entry_len, struct doa_entry *entry)
 {
-    strcpy(entry->fwinfo.firmware, "canario");
-    return 1;
+    u32_t enterprise, doa_type;
+    u8_t doa_location, doa_media_type_len;
+    u16_t doa_data_len;
+    char *buff_end = buff + entry_len;
+    char doa_data[DNS_DOA_MAX_PAYLOAD_SIZE];
+
+    SMEMCPY(&enterprise, buff, 4);
+    enterprise = PP_NTOHL(enterprise);
+    buff += 4;
+
+    SMEMCPY(&doa_type, buff, 4);
+    doa_type = PP_NTOHL(doa_type);
+    buff += 4;
+
+    SMEMCPY(&doa_location, buff, 1);
+    buff += 1;
+
+    SMEMCPY(&doa_media_type_len, buff, 1);
+    buff += 1;
+
+    // Ignore media type
+    buff += doa_media_type_len;
+    if (buff > buff_end) {
+        LWIP_DEBUGF(DNS_DEBUG, ("DOA media-type len overflows: %u bytes\n", doa_media_type_len));
+        return 0;
+    }
+
+    LWIP_DEBUGF(DNS_DEBUG, ("doa-enterprise: 0x%02x\n", enterprise));
+    LWIP_DEBUGF(DNS_DEBUG, ("doa-type: 0x%02x\n", doa_type));
+    LWIP_DEBUGF(DNS_DEBUG, ("doa-location: 0x%02x\n", doa_location));
+
+    if (doa_type == DOA_FIRMWARE || doa_type == DOA_FIRMWARE_SIG || doa_type == DOA_FIRMWARE_VERSION) {
+        doa_data_len = entry_len - 10 - doa_media_type_len;
+        char *decoded_buffer = (char *) os_zalloc(LWIP_MEM_ALIGN_BUFFER(DNS_DOA_MAX_PAYLOAD_SIZE));
+        char *decoded = (char *) LWIP_MEM_ALIGN(decoded_buffer);
+
+#ifdef DOA_BASE64_DECODE
+        // FIXME: Quick test
+        // strcpy(buff, "Y2FuYXJ5=");
+        // doa_data_len = strlen(buff);
+
+        base64_decode_chars(buff, doa_data_len, decoded);
+#else
+        SMEMCPY(decoded, buff, doa_data_len);
+        decoded[doa_data_len] = 0;
+#endif
+
+        LWIP_DEBUGF(DNS_DEBUG, ("doa-data: %s\n", decoded));
+        buff += doa_data_len;
+        if (doa_type == DOA_FIRMWARE /** FIXME : && doa_location == DOA_LOCATION_URI */) {
+            os_strncpy(entry->fwinfo.firmware, decoded, DNS_DOA_MAX_PAYLOAD_SIZE);
+            entry->fwinfo.firmware[DNS_DOA_MAX_PAYLOAD_SIZE - 1] = 0;
+        }
+        else if (doa_type == DOA_FIRMWARE_SIG && doa_location == DOA_LOCATION_LOCAL) {
+            os_strncpy(entry->fwinfo.firmware_sig, decoded, DNS_DOA_MAX_PAYLOAD_SIZE);
+            entry->fwinfo.firmware_sig[DNS_DOA_MAX_PAYLOAD_SIZE - 1] = 0;
+        }
+        else if (doa_type == DOA_FIRMWARE_VERSION && doa_location == DOA_LOCATION_LOCAL) {
+            os_strncpy(entry->fwinfo.firmware_version, decoded, DNS_DOA_MAX_FWVERSION_SIZE);
+            entry->fwinfo.firmware_version[DNS_DOA_MAX_FWVERSION_SIZE - 1] = 0;
+        }
+        else {
+            LWIP_DEBUGF(DNS_DEBUG, ("Unsupported combination of DOA-TYPE (%u) and DOA-LOCATION (%u)\n", doa_type, doa_location));
+            os_free(decoded_buffer);
+            return 0;
+        }
+        os_free(decoded_buffer);
+        return 1;
+    }
+
+    return 0;
 }
 
 /**
@@ -938,10 +1013,11 @@ dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, ip_addr_t *addr, u16_t 
                 if (pEntry->found) {
                   (*pEntry->found)(pEntry->name, &pEntry->ipaddr, pEntry->arg);
                 }
+                /* deallocate memory and return */
+                goto memerr;
             }
             else if (pEntry == (struct dns_table_entry *) &doa_entry && ans.type == PP_HTONS(DNS_RRTYPE_DOA)) {
-                LWIP_DEBUGF(DNS_DEBUG, "Respuesta DOA\n");
-                os_printf(">>> Respuesta DOA\n");
+                LWIP_DEBUGF(DNS_DEBUG, ("Respuesta DOA\n"));
                 if (decode_doa_record(pHostname + SIZEOF_DNS_ANSWER, ntohs(ans.len), &doa_entry)){
                     // if a valid and relevant DOA record was read count it.
                     doa_parsed_records++;
@@ -950,8 +1026,6 @@ dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, ip_addr_t *addr, u16_t 
                 --nanswers;
                 continue;
             }
-            /* deallocate memory and return */
-            goto memerr;
           } else {
             pHostname = pHostname + SIZEOF_DNS_ANSWER + htons(ans.len);
           }

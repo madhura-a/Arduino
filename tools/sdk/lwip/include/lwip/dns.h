@@ -71,6 +71,16 @@ extern "C" {
 #define DNS_RRCLASS_HS            4     /* Hesiod [Dyer 87] */
 #define DNS_RRCLASS_FLUSH         0x800 /* Flush bit */
 
+/** DOA-TYPE values */
+#define DOA_FIRMWARE              102
+#define DOA_FIRMWARE_SIG          103
+#define DOA_FIRMWARE_VERSION      104
+
+/** DOA-LOCATION values */
+#define DOA_LOCATION_LOCAL        1
+#define DOA_LOCATION_URI          2
+#define DOA_LOCATION_HDL          3
+
 /* The size used for the next line is rather a hack, but it prevents including socket.h in all files
    that include memp.h, and that would possibly break portability (since socket.h defines some types
    and constants possibly already define by the OS).
