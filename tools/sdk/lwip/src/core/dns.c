@@ -948,8 +948,8 @@ dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, ip_addr_t *addr, u16_t 
         if (((hdr->flags1 & DNS_FLAG1_RESPONSE) == 0) || (pEntry->err != 0) || (nquestions != 1)) {
           LWIP_DEBUGF(DNS_DEBUG, ("dns_recv: \"%s\": error in flags\n", pEntry->name));
           /* call callback to indicate error, clean up memory and return */
-          //goto responseerr;
-          goto memerr;
+          goto responseerr;
+          // goto memerr;
         }
         /* This entry is now completed. */
         pEntry->state = DNS_STATE_DONE;
@@ -1026,13 +1026,14 @@ responseerr:
   /* ERROR: call specified callback function with NULL as name to indicate an error */
   if (pEntry == (struct dns_table_entry *) &doa_entry && doa_entry.found){
     doa_entry.found(doa_entry.name, NULL, doa_entry.arg);
+    doa_entry.found = NULL;
   }
   else if (pEntry->found) {
     (*pEntry->found)(pEntry->name, NULL, pEntry->arg);
+    pEntry->found = NULL;
   }
   /* flush this entry */
   pEntry->state = DNS_STATE_UNUSED;
-  pEntry->found = NULL;
 
 memerr:
   /* free pbuf */
