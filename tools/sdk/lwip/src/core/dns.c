@@ -76,18 +76,12 @@
 
 #define DOA_MAGIC_ID (DNS_TABLE_SIZE + 1)
 
-// FIXME: Remove on production
-// #define LWIP_DEBUGF(d, x) os_printf x
-// #define DOA_BASE64_DECODE
-// end FIXME
-
 #if LWIP_DNS /* don't build if not configured for use in lwipopts.h */
 
 #include "lwip/udp.h"
 #include "lwip/mem.h"
 #include "lwip/memp.h"
 #include "lwip/dns.h"
-#include "../../../../../cores/esp8266/libb64/cdecode.h"
 
 #include <string.h>
 
@@ -835,7 +829,6 @@ decode_doa_record(char *buff, u16_t entry_len, struct doa_entry *entry)
     u8_t doa_location, doa_media_type_len;
     u16_t doa_data_len;
     char *buff_end = buff + entry_len;
-    char doa_data[DNS_DOA_MAX_PAYLOAD_SIZE];
 
     SMEMCPY(&enterprise, buff, 4);
     enterprise = PP_NTOHL(enterprise);
@@ -864,40 +857,23 @@ decode_doa_record(char *buff, u16_t entry_len, struct doa_entry *entry)
 
     if (doa_type == DOA_FIRMWARE || doa_type == DOA_FIRMWARE_SIG || doa_type == DOA_FIRMWARE_VERSION) {
         doa_data_len = entry_len - 10 - doa_media_type_len;
-        char *decoded_buffer = (char *) os_zalloc(LWIP_MEM_ALIGN_BUFFER(DNS_DOA_MAX_PAYLOAD_SIZE));
-        char *decoded = (char *) LWIP_MEM_ALIGN(decoded_buffer);
 
-#ifdef DOA_BASE64_DECODE
-        // FIXME: Quick test
-        // strcpy(buff, "Y2FuYXJ5=");
-        // doa_data_len = strlen(buff);
-
-        base64_decode_chars(buff, doa_data_len, decoded);
-#else
-        SMEMCPY(decoded, buff, doa_data_len);
-        decoded[doa_data_len] = 0;
-#endif
-
-        LWIP_DEBUGF(DNS_DEBUG, ("doa-data: %s\n", decoded));
-        buff += doa_data_len;
-        if (doa_type == DOA_FIRMWARE /** FIXME : && doa_location == DOA_LOCATION_URI */) {
-            os_strncpy(entry->fwinfo.firmware, decoded, DNS_DOA_MAX_PAYLOAD_SIZE);
-            entry->fwinfo.firmware[DNS_DOA_MAX_PAYLOAD_SIZE - 1] = 0;
+        if (doa_type == DOA_FIRMWARE && doa_location == DOA_LOCATION_URI) {
+            SMEMCPY(entry->fwinfo.firmware, buff, doa_data_len);
+            entry->fwinfo.firmware[doa_data_len] == 0;
         }
         else if (doa_type == DOA_FIRMWARE_SIG && doa_location == DOA_LOCATION_LOCAL) {
-            os_strncpy(entry->fwinfo.firmware_sig, decoded, DNS_DOA_MAX_PAYLOAD_SIZE);
-            entry->fwinfo.firmware_sig[DNS_DOA_MAX_PAYLOAD_SIZE - 1] = 0;
+            SMEMCPY(entry->fwinfo.firmware_sig, buff, doa_data_len);
+            entry->fwinfo.firmware_sig[doa_data_len] == 0;
         }
         else if (doa_type == DOA_FIRMWARE_VERSION && doa_location == DOA_LOCATION_LOCAL) {
-            os_strncpy(entry->fwinfo.firmware_version, decoded, DNS_DOA_MAX_FWVERSION_SIZE);
-            entry->fwinfo.firmware_version[DNS_DOA_MAX_FWVERSION_SIZE - 1] = 0;
+            SMEMCPY(entry->fwinfo.firmware_version, buff, doa_data_len);
+            entry->fwinfo.firmware_version[doa_data_len] == 0;
         }
         else {
             LWIP_DEBUGF(DNS_DEBUG, ("Unsupported combination of DOA-TYPE (%u) and DOA-LOCATION (%u)\n", doa_type, doa_location));
-            os_free(decoded_buffer);
             return 0;
         }
-        os_free(decoded_buffer);
         return 1;
     }
 
