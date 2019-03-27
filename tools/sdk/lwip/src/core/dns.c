@@ -74,6 +74,8 @@
 
 #include "lwip/opt.h"
 
+#define DOA_MAGIC_ID (DNS_TABLE_SIZE + 1)
+
 #if LWIP_DNS /* don't build if not configured for use in lwipopts.h */
 
 #include "lwip/udp.h"
@@ -184,6 +186,22 @@ struct dns_table_entry {
   void *arg;
 };
 
+/** DNS table entry */
+struct doa_entry {
+  u8_t  state;
+  u8_t  numdns;
+  u8_t  tmr;
+  u8_t  retries;
+  u8_t  seqno;
+  u8_t  err;
+  u32_t ttl;
+  char name[DNS_MAX_NAME_LENGTH];
+  firmwareinfo_t fwinfo;
+  /* pointer to callback on DNS query done */
+  dns_doa_found_callback found;
+  void *arg;
+} doa_entry;
+
 #if DNS_LOCAL_HOSTLIST
 
 #if DNS_LOCAL_HOSTLIST_IS_DYNAMIC
@@ -227,7 +245,7 @@ static ip_addr_t              dns_servers[DNS_MAX_SERVERS];
 /** Contiguous buffer for processing responses */
 //static u8_t                   dns_payload_buffer[LWIP_MEM_ALIGN_BUFFER(DNS_MSG_SIZE)];
 static u8_t*                  dns_payload;
-static u16_t					  dns_random;
+static u8_t					  dns_random;
 /**
  * Initialize the resolver: set up the UDP pcb and configure the default server
  * (DNS_SERVER_ADDRESS).
@@ -561,7 +579,7 @@ dns_parse_name(unsigned char *query)
  * @return ERR_OK if packet is sent; an err_t indicating the problem otherwise
  */
 static err_t ICACHE_FLASH_ATTR
-dns_send(u8_t numdns, const char* name, u8_t id)
+dns_send(u8_t numdns, const char* name, u8_t id, uint16_t rr_type)
 {
   err_t err;
   struct dns_hdr *hdr;
@@ -570,7 +588,7 @@ dns_send(u8_t numdns, const char* name, u8_t id)
   char *query, *nptr;
   const char *pHostname;
   u8_t n;
-  dns_random = os_random()>>16;
+  dns_random = os_random()%250;
   LWIP_DEBUGF(DNS_DEBUG, ("dns_send: dns_servers[%"U16_F"] \"%s\": request\n",
               (u16_t)(numdns), name));
   LWIP_ASSERT("dns server out of array", numdns < DNS_MAX_SERVERS);
@@ -606,7 +624,7 @@ dns_send(u8_t numdns, const char* name, u8_t id)
     *query++='\0';
 
     /* fill dns query */
-    qry.type = PP_HTONS(DNS_RRTYPE_A);
+    qry.type = PP_HTONS(rr_type);
     qry.cls = PP_HTONS(DNS_RRCLASS_IN);
     SMEMCPY(query, &qry, SIZEOF_DNS_QUERY);
 
@@ -654,7 +672,7 @@ dns_check_entry(u8_t i)
       pEntry->retries = 0;
       
       /* send DNS packet for this entry */
-      err = dns_send(pEntry->numdns, pEntry->name, i);
+      err = dns_send(pEntry->numdns, pEntry->name, i, DNS_RRTYPE_A);
       if (err != ERR_OK) {
         LWIP_DEBUGF(DNS_DEBUG | LWIP_DBG_LEVEL_WARNING,
                     ("dns_send returned error: %s\n", lwip_strerr(err)));
@@ -687,7 +705,7 @@ dns_check_entry(u8_t i)
         pEntry->tmr = pEntry->retries;
 
         /* send DNS packet for this entry */
-        err = dns_send(pEntry->numdns, pEntry->name, i);
+        err = dns_send(pEntry->numdns, pEntry->name, i, DNS_RRTYPE_A);
         if (err != ERR_OK) {
           LWIP_DEBUGF(DNS_DEBUG | LWIP_DBG_LEVEL_WARNING,
                       ("dns_send returned error: %s\n", lwip_strerr(err)));
@@ -698,7 +716,7 @@ dns_check_entry(u8_t i)
 
     case DNS_STATE_DONE: {
       /* if the time to live is nul */
-      if ((pEntry->ttl == 0) || (--pEntry->ttl == 0)) {
+      if (--pEntry->ttl == 0) {
         LWIP_DEBUGF(DNS_DEBUG, ("dns_check_entry: \"%s\": flush\n", pEntry->name));
         /* flush this entry */
         pEntry->state = DNS_STATE_UNUSED;
@@ -715,6 +733,82 @@ dns_check_entry(u8_t i)
   }
 }
 
+static void ICACHE_FLASH_ATTR
+dns_doa_check_entry()
+{
+  err_t err;
+  struct doa_entry *pEntry = &doa_entry;
+
+  switch(pEntry->state) {
+
+    case DNS_STATE_NEW: {
+      /* initialize new entry */
+      pEntry->state   = DNS_STATE_ASKING;
+      pEntry->numdns  = 0;
+      pEntry->tmr     = 1;
+      pEntry->retries = 0;
+
+      /* send DNS packet for this entry */
+      err = dns_send(pEntry->numdns, pEntry->name, DOA_MAGIC_ID, DNS_RRTYPE_DOA);
+      if (err != ERR_OK) {
+        LWIP_DEBUGF(DNS_DEBUG | LWIP_DBG_LEVEL_WARNING,
+                    ("dns_send returned error: %s\n", lwip_strerr(err)));
+      }
+      break;
+    }
+
+    case DNS_STATE_ASKING: {
+      if (--pEntry->tmr == 0) {
+        if (++pEntry->retries == DNS_MAX_RETRIES) {
+          if ((pEntry->numdns+1<DNS_MAX_SERVERS) && !ip_addr_isany(&dns_servers[pEntry->numdns+1])) {
+            /* change of server */
+            pEntry->numdns++;
+            pEntry->tmr     = 1;
+            pEntry->retries = 0;
+            break;
+          } else {
+            LWIP_DEBUGF(DNS_DEBUG, ("dns_check_entry: \"%s\": timeout\n", pEntry->name));
+            /* call specified callback function if provided */
+            if (pEntry->found)
+              (*pEntry->found)(pEntry->name, NULL, pEntry->arg);
+            /* flush this entry */
+            pEntry->state   = DNS_STATE_UNUSED;
+            pEntry->found   = NULL;
+            break;
+          }
+        }
+
+        /* wait longer for the next retry */
+        pEntry->tmr = pEntry->retries;
+
+        /* send DNS packet for this entry */
+        err = dns_send(pEntry->numdns, pEntry->name, DOA_MAGIC_ID, DNS_RRTYPE_DOA);
+        if (err != ERR_OK) {
+          LWIP_DEBUGF(DNS_DEBUG | LWIP_DBG_LEVEL_WARNING,
+                      ("dns_send returned error: %s\n", lwip_strerr(err)));
+        }
+      }
+      break;
+    }
+
+    case DNS_STATE_DONE: {
+      /* if the time to live is nul */
+      if (--pEntry->ttl == 0) {
+        LWIP_DEBUGF(DNS_DEBUG, ("dns_check_entry: \"%s\": flush\n", pEntry->name));
+        /* flush this entry */
+        pEntry->state = DNS_STATE_UNUSED;
+        pEntry->found = NULL;
+      }
+      break;
+    }
+    case DNS_STATE_UNUSED:
+      /* nothing to do */
+      break;
+    default:
+      LWIP_ASSERT("unknown dns_table entry state:", 0);
+      break;
+  }
+}
 /**
  * Call dns_check_entry for each entry in dns_table - check all entries.
  */
@@ -726,6 +820,64 @@ dns_check_entries(void)
   for (i = 0; i < DNS_TABLE_SIZE; ++i) {
     dns_check_entry(i);
   }
+}
+
+static int ICACHE_FLASH_ATTR
+decode_doa_record(char *buff, u16_t entry_len, struct doa_entry *entry)
+{
+    u32_t enterprise, doa_type;
+    u8_t doa_location, doa_media_type_len;
+    u16_t doa_data_len;
+    char *buff_end = buff + entry_len;
+
+    SMEMCPY(&enterprise, buff, 4);
+    enterprise = PP_NTOHL(enterprise);
+    buff += 4;
+
+    SMEMCPY(&doa_type, buff, 4);
+    doa_type = PP_NTOHL(doa_type);
+    buff += 4;
+
+    SMEMCPY(&doa_location, buff, 1);
+    buff += 1;
+
+    SMEMCPY(&doa_media_type_len, buff, 1);
+    buff += 1;
+
+    // Ignore media type
+    buff += doa_media_type_len;
+    if (buff > buff_end) {
+        LWIP_DEBUGF(DNS_DEBUG, ("DOA media-type len overflows: %u bytes\n", doa_media_type_len));
+        return 0;
+    }
+
+    LWIP_DEBUGF(DNS_DEBUG, ("doa-enterprise: 0x%02x\n", enterprise));
+    LWIP_DEBUGF(DNS_DEBUG, ("doa-type: 0x%02x\n", doa_type));
+    LWIP_DEBUGF(DNS_DEBUG, ("doa-location: 0x%02x\n", doa_location));
+
+    if (doa_type == DOA_FIRMWARE || doa_type == DOA_FIRMWARE_SIG || doa_type == DOA_FIRMWARE_VERSION) {
+        doa_data_len = entry_len - 10 - doa_media_type_len;
+
+        if (doa_type == DOA_FIRMWARE && doa_location == DOA_LOCATION_URI) {
+            SMEMCPY(entry->fwinfo.firmware, buff, doa_data_len);
+            entry->fwinfo.firmware[doa_data_len] == 0;
+        }
+        else if (doa_type == DOA_FIRMWARE_SIG && doa_location == DOA_LOCATION_LOCAL) {
+            SMEMCPY(entry->fwinfo.firmware_sig, buff, doa_data_len);
+            entry->fwinfo.firmware_sig[doa_data_len] == 0;
+        }
+        else if (doa_type == DOA_FIRMWARE_VERSION && doa_location == DOA_LOCATION_LOCAL) {
+            SMEMCPY(entry->fwinfo.firmware_version, buff, doa_data_len);
+            entry->fwinfo.firmware_version[doa_data_len] == 0;
+        }
+        else {
+            LWIP_DEBUGF(DNS_DEBUG, ("Unsupported combination of DOA-TYPE (%u) and DOA-LOCATION (%u)\n", doa_type, doa_location));
+            return 0;
+        }
+        return 1;
+    }
+
+    return 0;
 }
 
 /**
@@ -740,8 +892,9 @@ dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, ip_addr_t *addr, u16_t 
   char *pHostname;
   struct dns_hdr *hdr;
   struct dns_answer ans;
-  struct dns_table_entry *pEntry;
+  struct dns_table_entry *pEntry = NULL;
   u16_t nquestions, nanswers;
+  u16_t doa_parsed_records = 0;
 
   u8_t* dns_payload_buffer = (u8_t* )os_zalloc(LWIP_MEM_ALIGN_BUFFER(DNS_MSG_SIZE));
   dns_payload = (u8_t *)LWIP_MEM_ALIGN(dns_payload_buffer);
@@ -773,6 +926,16 @@ dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, ip_addr_t *addr, u16_t 
     i = i - dns_random;
     if (i < DNS_TABLE_SIZE) {
       pEntry = &dns_table[i];
+    }
+    else if (i == DOA_MAGIC_ID) {
+      /* We use a special ID for DOA queries, as the first
+         fields of struct doa_entry are the same of a struct dns_table_entry,
+         it is possible to make a casting to access those fields. */
+      pEntry = (struct dns_table_entry *) &doa_entry;
+    }
+    if (pEntry != NULL) {
+      /* pEntry points to either a struct dns_table_entry or a struct
+         doa_entry_t; */
       if(pEntry->state == DNS_STATE_ASKING) {
         pEntry->err = hdr->flags2 & DNS_FLAG2_ERR_MASK;
 
@@ -785,8 +948,8 @@ dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, ip_addr_t *addr, u16_t 
         if (((hdr->flags1 & DNS_FLAG1_RESPONSE) == 0) || (pEntry->err != 0) || (nquestions != 1)) {
           LWIP_DEBUGF(DNS_DEBUG, ("dns_recv: \"%s\": error in flags\n", pEntry->name));
           /* call callback to indicate error, clean up memory and return */
-          //goto responseerr;
-          goto memerr;
+          goto responseerr;
+          // goto memerr;
         }
         /* This entry is now completed. */
         pEntry->state = DNS_STATE_DONE;
@@ -809,36 +972,46 @@ dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, ip_addr_t *addr, u16_t 
 
           /* Check for IP address type and Internet class. Others are discarded. */
           SMEMCPY(&ans, pHostname, SIZEOF_DNS_ANSWER);
-          if((ans.type == PP_HTONS(DNS_RRTYPE_A)) && (ans.cls == PP_HTONS(DNS_RRCLASS_IN)) &&
-             (ans.len == PP_HTONS(sizeof(ip_addr_t))) ) {
+          if (((ans.type == PP_HTONS(DNS_RRTYPE_A)) && (ans.cls == PP_HTONS(DNS_RRCLASS_IN)) &&
+             (ans.len == PP_HTONS(sizeof(ip_addr_t)))) || (ans.type == PP_HTONS(DNS_RRTYPE_DOA) && ans.cls == PP_HTONS(DNS_RRCLASS_IN))) {
             /* read the answer resource record's TTL, and maximize it if needed */
             pEntry->ttl = ntohl(ans.ttl);
             if (pEntry->ttl > DNS_MAX_TTL) {
               pEntry->ttl = DNS_MAX_TTL;
             }
-            /* read the IP address after answer resource record's header */
-            SMEMCPY(&(pEntry->ipaddr), (pHostname+SIZEOF_DNS_ANSWER), sizeof(ip_addr_t));
-            LWIP_DEBUGF(DNS_DEBUG, ("dns_recv: \"%s\": response = ", pEntry->name));
-            ip_addr_debug_print(DNS_DEBUG, (&(pEntry->ipaddr)));
-            LWIP_DEBUGF(DNS_DEBUG, ("\n"));
-            /* call specified callback function if provided */
-            if (pEntry->found) {
-              (*pEntry->found)(pEntry->name, &pEntry->ipaddr, pEntry->arg);
+            if (ans.type == PP_HTONS(DNS_RRTYPE_A)) {
+                /* read the IP address after answer resource record's header */
+                SMEMCPY(&(pEntry->ipaddr), (pHostname+SIZEOF_DNS_ANSWER), sizeof(ip_addr_t));
+                LWIP_DEBUGF(DNS_DEBUG, ("dns_recv: \"%s\": response = ", pEntry->name));
+                ip_addr_debug_print(DNS_DEBUG, (&(pEntry->ipaddr)));
+                LWIP_DEBUGF(DNS_DEBUG, ("\n"));
+                /* call specified callback function if provided */
+                if (pEntry->found) {
+                  (*pEntry->found)(pEntry->name, &pEntry->ipaddr, pEntry->arg);
+                }
+                /* deallocate memory and return */
+                goto memerr;
             }
-            if (pEntry->ttl == 0) {
-              /* RFC 883, page 29: "Zero values are
-                 interpreted to mean that the RR can only be used for the
-                 transaction in progress, and should not be cached."
-                 -> flush this entry now */
-              goto flushentry;
+            else if (pEntry == (struct dns_table_entry *) &doa_entry && ans.type == PP_HTONS(DNS_RRTYPE_DOA)) {
+                LWIP_DEBUGF(DNS_DEBUG, ("Respuesta DOA\n"));
+                if (decode_doa_record(pHostname + SIZEOF_DNS_ANSWER, ntohs(ans.len), &doa_entry)){
+                    // if a valid and relevant DOA record was read count it.
+                    doa_parsed_records++;
+                }
+                pHostname = pHostname + SIZEOF_DNS_ANSWER + ntohs(ans.len);
+                --nanswers;
+                continue;
             }
-            /* deallocate memory and return */
-            goto memerr;
           } else {
             pHostname = pHostname + SIZEOF_DNS_ANSWER + htons(ans.len);
           }
           --nanswers;
         }
+        if (pEntry == (struct dns_table_entry *) &doa_entry && doa_parsed_records){
+            doa_entry.found(doa_entry.name, &doa_entry.fwinfo, doa_entry.arg);
+            goto memerr;
+        }
+        // if doa_records > 1 -> callback
         LWIP_DEBUGF(DNS_DEBUG, ("dns_recv: \"%s\": error in response\n", pEntry->name));
         /* call callback to indicate error, clean up memory and return */
         goto responseerr;
@@ -851,13 +1024,16 @@ dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, ip_addr_t *addr, u16_t 
 
 responseerr:
   /* ERROR: call specified callback function with NULL as name to indicate an error */
-  if (pEntry->found) {
-    (*pEntry->found)(pEntry->name, NULL, pEntry->arg);
+  if (pEntry == (struct dns_table_entry *) &doa_entry && doa_entry.found){
+    doa_entry.found(doa_entry.name, NULL, doa_entry.arg);
+    doa_entry.found = NULL;
   }
-flushentry:
+  else if (pEntry->found) {
+    (*pEntry->found)(pEntry->name, NULL, pEntry->arg);
+    pEntry->found = NULL;
+  }
   /* flush this entry */
   pEntry->state = DNS_STATE_UNUSED;
-  pEntry->found = NULL;
 
 memerr:
   /* free pbuf */
@@ -931,6 +1107,38 @@ dns_enqueue(const char *name, dns_found_callback found, void *callback_arg)
   return ERR_INPROGRESS;
 }
 
+static err_t ICACHE_FLASH_ATTR
+dns_doa_enqueue(const char *name, dns_doa_found_callback found, void *callback_arg)
+{
+  u8_t i;
+  u8_t lseq, lseqi;
+  size_t namelen;
+
+  if (doa_entry.state != DNS_STATE_UNUSED && doa_entry.state != DNS_STATE_DONE) {
+      /* no entry can't be used now, table is full */
+      LWIP_DEBUGF(DNS_DEBUG, ("dns_doa_enqueue: \"%s\": DNS entries table is full\n", name));
+      return ERR_MEM;
+  }
+
+  /* use this entry */
+  LWIP_DEBUGF(DNS_DEBUG, ("dns_doa_enqueue: \"%s\": use DNS entry %"U16_F"\n", name, (u16_t)(i)));
+
+  /* fill the entry */
+  doa_entry.state = DNS_STATE_NEW;
+  doa_entry.seqno = dns_seqno++;
+  doa_entry.found = found;
+  doa_entry.arg   = callback_arg;
+  namelen = LWIP_MIN(os_strlen(name), DNS_MAX_NAME_LENGTH-1);
+  MEMCPY(doa_entry.name, name, namelen);
+  doa_entry.name[namelen] = 0;
+
+  /* force to send query without waiting timer */
+  dns_doa_check_entry();
+
+  /* dns query is enqueued */
+  return ERR_INPROGRESS;
+}
+
 /**
  * Resolve a hostname (string) into an IP address.
  * NON-BLOCKING callback version for use with raw API!!!
@@ -983,6 +1191,22 @@ dns_gethostbyname(const char *hostname, ip_addr_t *addr, dns_found_callback foun
 
   /* queue query with specified callback */
   return dns_enqueue(hostname, found, callback_arg);
+}
+
+err_t ICACHE_FLASH_ATTR
+dns_getfirmwareinfo(const char *hostname, dns_doa_found_callback found,
+                    void *callback_arg)
+{
+  /* not initialized or no valid server yet, or invalid addr pointer
+   * or invalid hostname or invalid hostname length */
+  if ((dns_pcb == NULL) ||
+      (!hostname) || (!hostname[0]) ||
+      (os_strlen(hostname) >= DNS_MAX_NAME_LENGTH)) {
+    return ERR_ARG;
+  }
+
+  /* queue query with specified callback */
+  return dns_doa_enqueue(hostname, found, callback_arg);
 }
 
 #endif /* LWIP_DNS */
