@@ -2,6 +2,8 @@ TOOLCHAIN_DIR ?= ../../../xtensa-lx106-elf
 TOOLS_PATH ?= $(TOOLCHAIN_DIR)/bin/xtensa-lx106-elf-
 LWIP_LIB ?= liblwip_src.a
 SDK_PATH ?= $(abspath ../../)
+LIBB64_PATH ?= ../../../../cores/esp8266/libb64
+
 
 BUILD_PATH = build
 LWIP_SRCS = $(patsubst %.c,$(BUILD_PATH)/%.o,$(wildcard */*.c)) $(patsubst %.c,$(BUILD_PATH)/%.o,$(wildcard */*/*.c))
@@ -25,7 +27,10 @@ $(BUILD_PATH)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(BUILD_FLAGS) $(BUILD_DEFINES) $(LWIP_INCLUDE) $(EXTRA_FLAGS) $< -o $@
 
-$(LWIP_LIB): $(BUILD_PATH)/user_config.h $(LWIP_SRCS)
+$(BUILD_PATH)/cdecode.o: $(LIBB64_PATH)/cdecode.c
+	$(CC) $(BUILD_FLAGS) -I$(LIBB64_PATH) $< -o $@
+
+$(LWIP_LIB): $(BUILD_PATH)/user_config.h $(LWIP_SRCS) $(BUILD_PATH)/cdecode.o
 	$(AR) cru $(LWIP_LIB) $(LWIP_SRCS)
 
 all: $(LWIP_LIB)
