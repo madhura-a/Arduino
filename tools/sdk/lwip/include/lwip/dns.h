@@ -1,7 +1,9 @@
 /**
  * lwip DNS resolver header file.
+
  * Author: Jim Pettinato 
  *   April 2007
+
  * ported from uIP resolv.c Copyright (c) 2002-2003, Adam Dunkels.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -60,7 +62,6 @@ extern "C" {
 #define DNS_RRTYPE_MINFO          14    /* mailbox or mail list information */
 #define DNS_RRTYPE_MX             15    /* mail exchange */
 #define DNS_RRTYPE_TXT            16    /* text strings */
-#define DNS_RRTYPE_DOA            259   /* DOA register */
 
 /** DNS field CLASS used for "Resource Records" */
 #define DNS_RRCLASS_IN            1     /* the Internet */
@@ -69,31 +70,12 @@ extern "C" {
 #define DNS_RRCLASS_HS            4     /* Hesiod [Dyer 87] */
 #define DNS_RRCLASS_FLUSH         0x800 /* Flush bit */
 
-/** DOA-TYPE values */
-#define DOA_FIRMWARE              102
-#define DOA_FIRMWARE_SIG          103
-#define DOA_FIRMWARE_VERSION      104
-
-/** DOA-LOCATION values */
-#define DOA_LOCATION_LOCAL        1
-#define DOA_LOCATION_URI          2
-#define DOA_LOCATION_HDL          3
-
 /* The size used for the next line is rather a hack, but it prevents including socket.h in all files
    that include memp.h, and that would possibly break portability (since socket.h defines some types
    and constants possibly already define by the OS).
    Calculation rule:
    sizeof(struct addrinfo) + sizeof(struct sockaddr_in) + DNS_MAX_NAME_LENGTH + 1 byte zero-termination */
 #define NETDB_ELEM_SIZE           (32 + 16 + DNS_MAX_NAME_LENGTH + 1)
-
-
-struct doa_firmwareinfo{
-    char firmware[DNS_DOA_MAX_PAYLOAD_SIZE];
-    char firmware_sig[DNS_DOA_MAX_PAYLOAD_SIZE];
-    char firmware_version[DNS_DOA_MAX_FWVERSION_SIZE];
-};
-typedef struct doa_firmwareinfo firmwareinfo_t;
-
 
 #if DNS_LOCAL_HOSTLIST
 /** struct used for local host-list */
@@ -120,7 +102,6 @@ struct local_hostlist_entry {
  * @param callback_arg a user-specified callback argument passed to dns_gethostbyname
 */
 typedef void (*dns_found_callback)(const char *name, ip_addr_t *ipaddr, void *callback_arg);
-typedef void (*dns_doa_found_callback)(const char *name, firmwareinfo_t *fwinfo, void *callback_arg);
 
 void           dns_init(void);
 void           dns_tmr(void);
@@ -128,8 +109,6 @@ void           dns_setserver(u8_t numdns, ip_addr_t *dnsserver);
 ip_addr_t      dns_getserver(u8_t numdns);
 err_t          dns_gethostbyname(const char *hostname, ip_addr_t *addr,
                                  dns_found_callback found, void *callback_arg);
-err_t          dns_getfirmwareinfo(const char *hostname,
-                                 dns_doa_found_callback found, void *callback_arg);
 
 #if DNS_LOCAL_HOSTLIST && DNS_LOCAL_HOSTLIST_IS_DYNAMIC
 int            dns_local_removehost(const char *hostname, const ip_addr_t *addr);
