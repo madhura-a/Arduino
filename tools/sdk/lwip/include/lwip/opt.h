@@ -804,6 +804,17 @@
 #define DNS_MAX_NAME_LENGTH             256
 #endif
 
+/** DOA max payload size. */
+#ifndef DNS_DOA_MAX_PAYLOAD_SIZE
+#define DNS_DOA_MAX_PAYLOAD_SIZE 256
+#endif
+
+
+/** DOA max firmware version string size */
+#ifndef DNS_DOA_MAX_FWVERSION_SIZE
+#define DNS_DOA_MAX_FWVERSION_SIZE 10
+#endif
+
 /** The maximum of DNS servers */
 #ifndef DNS_MAX_SERVERS
 #define DNS_MAX_SERVERS                 2
